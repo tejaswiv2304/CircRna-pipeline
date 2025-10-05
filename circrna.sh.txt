@@ -1,0 +1,91 @@
+#!/bin/bash
+# ============================================================
+# circRNA Analysis Pipeline
+# Tools: Miniconda, FastQC, Trimmomatic, STAR, CIRCexplorer2
+# Reference: GENCODE GRCh38 (release 47)
+# ============================================================
+
+# ---------- 1. Install Miniconda ----------
+cd ~
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh -b -p ~/miniconda3
+source ~/miniconda3/etc/profile.d/conda.sh
+echo 'source ~/miniconda3/etc/profile.d/conda.sh' >> ~/.bashrc
+conda --version
+
+# ---------- 2. Create and activate environment ----------
+conda create -n circrna_env -c bioconda -c conda-forge fastqc trimmomatic star circexplorer2 ucsc-gtftogenepred perl wget -y
+conda activate circrna_env
+
+# ---------- 3. Download FASTQ files ----------
+mkdir -p ~/project/fastq && cd ~/project/fastq
+
+wget ftp://ftp.ddbj.nig.ac.jp/ddbj_database/dra/fastq/DRRXXX/DRRXXXXXX/DRRXXXXXX_1.fastq.gz
+wget ftp://ftp.ddbj.nig.ac.jp/ddbj_database/dra/fastq/DRRXXX/DRRXXXXXX/DRRXXXXXX_2.fastq.gz
+
+gunzip DRRXXXXXX_1.fastq.gz
+gunzip DRRXXXXXX_2.fastq.gz
+
+# ---------- 4. Quality check ----------
+mkdir -p ~/project/fastqc_reports
+fastqc -o ~/project/fastqc_reports -t 4 DRRXXXXXX_1.fastq DRRXXXXXX_2.fastq
+
+# ---------- 5. Adapter trimming using Trimmomatic ----------
+mkdir -p ~/project/trimmed
+
+trimmomatic PE -threads 8 \
+DRRXXXXXX_1.fastq DRRXXXXXX_2.fastq \
+~/project/trimmed/DRRXXXXXX_1_paired.fastq ~/project/trimmed/DRRXXXXXX_1_unpaired.fastq \
+~/project/trimmed/DRRXXXXXX_2_paired.fastq ~/project/trimmed/DRRXXXXXX_2_unpaired.fastq \
+ILLUMINACLIP:/path/to/TruSeq3-PE.fa:2:30:10 \
+LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+
+# ---------- 6. Download hg38 reference genome and annotation ----------
+mkdir -p ~/genome/hg38 && cd ~/genome/hg38
+
+wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/GRCh38.primary_assembly.genome.fa.gz
+wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz
+gunzip *.gz
+
+# ---------- 7. Build STAR genome index ----------
+mkdir -p ~/genome/hg38_index
+
+STAR --runThreadN 8 \
+--runMode genomeGenerate \
+--genomeDir ~/genome/hg38_index \
+--genomeFastaFiles ~/genome/hg38/GRCh38.primary_assembly.genome.fa \
+--sjdbGTFfile ~/genome/hg38/gencode.v47.annotation.gtf \
+--sjdbOverhang 100
+
+# ---------- 8. Align reads and extract chimeric junctions ----------
+mkdir -p ~/project/aligned
+
+STAR --runThreadN 8 \
+--genomeDir ~/genome/hg38_index \
+--readFilesIn ~/project/trimmed/DRRXXXXXX_1_paired.fastq ~/project/trimmed/DRRXXXXXX_2_paired.fastq \
+--outFileNamePrefix ~/project/aligned/DRRXXXXXX_ \
+--outSAMtype BAM SortedByCoordinate \
+--chimSegmentMin 10 \
+--chimOutType Junctions SeparateSAMold
+
+# ---------- 9. Convert GTF to GenePred ----------
+cd ~/genome/hg38
+gtfToGenePred -genePredExt -geneNameAsName2 gencode.v47.annotation.gtf gencode.v47.annotation.genepred
+
+# ---------- 10. Convert GenePred to TXT (CIRCexplorer2 format) ----------
+perl -alne '$"="\t"; print "@F[11,0..9]"' gencode.v47.annotation.genepred > gencode.v47.annotation.txt
+
+# ---------- 11. Parse STAR chimeric junctions ----------
+mkdir -p ~/project/circexplorer_out
+
+CIRCexplorer2 parse -t STAR ~/project/aligned/DRRXXXXXX_Chimeric.out.junction \
+> ~/project/circexplorer_out/back_spliced_junction.bed
+
+# ---------- 12. Annotate circRNAs ----------
+CIRCexplorer2 annotate \
+-r ~/genome/hg38/gencode.v47.annotation.txt \
+-g ~/genome/hg38/GRCh38.primary_assembly.genome.fa \
+-b ~/project/circexplorer_out/back_spliced_junction.bed
+
+# ---------- 13. Done ----------
+echo "circRNA pipeline completed successfully!"
