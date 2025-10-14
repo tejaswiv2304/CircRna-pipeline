@@ -1,8 +1,5 @@
 # circRNA Detection Pipeline (hg38)
 
-This README provides a complete guide to perform circular RNA (circRNA) detection using paired-end RNA-seq data, from downloading reference files to annotation using **CIRCexplorer2**.
-
----
 
 ## 1. Install Miniconda
 ```bash
